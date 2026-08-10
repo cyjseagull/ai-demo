@@ -15,6 +15,10 @@ max_execution_time = 60
 handle_parsing_errors = true
 return_intermediate_steps = true
 
-[agent.cache]
+[context.cache]
 enable = true
-cache_path = "data/agent_memory.db"
+backend = "sqlite"
+path = "data/context_cache.db"
+max_sessions = 50
+max_messages_per_session = 200
+max_context_messages = 30
