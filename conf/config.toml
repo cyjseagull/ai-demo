@@ -1,0 +1,20 @@
+[llm]
+api_key = "YOUR_API_KEY"
+model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.ai"
+temperature = 0.7
+
+[agent]
+max_iterations = 5
+system_prompt = """
+You are a helpful assistant.
+"""
+debug = true
+verbose = true
+max_execution_time = 60
+handle_parsing_errors = true
+return_intermediate_steps = true
+
+[agent.cache]
+enable = true
+cache_path = "data/agent_memory.db"
