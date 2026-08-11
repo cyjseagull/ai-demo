@@ -20,8 +20,11 @@ from langchain_core.messages import (
     trim_messages,
 )
 
-from common.context_store import ContextStore, StoredMessage, create_store
+from component.context_store import ContextStore, StoredMessage, create_store
+from component.logger import get_logger
 from config.config import CacheConfig
+
+_log = get_logger("context_manager")
 
 
 # ---------- StoredMessage <-> BaseMessage 转换（薄适配层） ----------
@@ -42,7 +45,8 @@ def to_langchain(msg: StoredMessage) -> BaseMessage:
             args = msg.args
         return AIMessage(
             content=msg.content,
-            tool_calls=[{"id": msg.tool_call_id or "", "name": msg.name, "args": args}],
+            tool_calls=[{"id": msg.tool_call_id or "",
+                         "name": msg.name, "args": args}],
         )
     return AIMessage(content=msg.content)
 
@@ -55,8 +59,11 @@ def _count_messages(msgs: List[BaseMessage]) -> int:
 class ContextManager:
     """上下文缓存门面。缓存未启用时请勿构造（由调用方判断 enable）。"""
 
-    def __init__(self, cache: CacheConfig):
+    def __init__(self, cache: CacheConfig, summarizer=None, rag_index=None):
         self.cache = cache
+        self.summarizer = summarizer   # 可选：Callable[[list[BaseMessage]], str]
+        self.rag_index = rag_index     # 可选：component.rag_index.RagIndex
+        self.rag_top_k = 4             # 检索命中条数，可由调用方按 RagConfig.top_k 覆盖
         self._store: Optional[ContextStore] = None
         self._current_session: Optional[str] = None
         self._start_fresh = False   # 显式清理后下次创建新会话，而非恢复旧会话
@@ -76,6 +83,32 @@ class ContextManager:
         if self._write_count % 20 == 0:
             self.enforce_caps_if_needed()
 
+    def _maybe_summarize(self, session_id: str) -> None:
+        """历史超过阈值时，把更早轮次折叠进运行摘要并裁剪（仅 summarize 策略且已注入 summarizer）。"""
+        if self.summarizer is None or self.cache.trim_strategy != "summarize":
+            return
+        s = self._ensure_store()
+        threshold = self.cache.summary_trigger_messages
+        keep = self.cache.recent_window_size
+        messages = s.get_messages(session_id)
+        if len(messages) < threshold:
+            return
+        older = messages[: len(messages) - keep]   # 超出最近窗口的旧轮次
+        if not older:
+            return
+        old_summary = s.get_summary(session_id)
+        fold: List[BaseMessage] = []
+        if old_summary:
+            fold.append(SystemMessage(content=f"摘要：{old_summary}"))
+        fold += [to_langchain(m) for m in older]
+        new_summary = self.summarizer(fold)
+        s.set_summary(session_id, new_summary)
+        s.prune(session_id, keep)
+        _log.info(
+            "summarize session=%s folded=%d keep=%d new_summary_len=%d",
+            session_id, len(older), keep, len(new_summary),
+        )
+
     # ---------- 会话 ----------
 
     def current_session(self) -> str:
@@ -90,7 +123,8 @@ class ContextManager:
             sessions = s.list_sessions()
             if sessions and not self._start_fresh:
                 # 恢复最近写入的会话（进程重启后继续对话）
-                self._current_session = max(sessions.items(), key=lambda kv: kv[1])[0]
+                self._current_session = max(
+                    sessions.items(), key=lambda kv: kv[1])[0]
             else:
                 self._current_session = s.create_session()
                 self._start_fresh = False
@@ -118,18 +152,46 @@ class ContextManager:
             return session_id
         return self.current_session()
 
+    def _index_turn(self, session_id: str, role: str, text: str) -> None:
+        """把一轮对话写入向量索引（启用 rag 时）。"""
+        if self.rag_index is None:
+            return
+        s = self._ensure_store()
+        turn_idx = len(s.get_messages(session_id)) - 1
+        self.rag_index.add_turn(session_id, turn_idx, role, text)
+
     # ---------- 读写 ----------
 
-    def get_context(self, session_id: Optional[str] = None) -> List[BaseMessage]:
-        """加载指定会话（缺省为当前会话）的历史并按窗口裁剪，返回送入模型的 BaseMessage 列表。
+    def get_context(self, session_id: Optional[str] = None, question: Optional[str] = None) -> List[BaseMessage]:
+        """组装三层记忆上下文：系统提示 + 运行摘要 + 检索命中轮次 + 最近窗口 + 当前问题。
 
-        显式传入 session_id 可精确定位会话，避免误取其他会话造成上下文浪费。
+        显式传入 session_id 可精确定位会话；question 非空且启用 RAG 时先做向量检索；
+        发送前按预算 trim_messages 兜底（系统提示与当前问题保留）。
         """
         s = self._ensure_store()
         sid = self._resolve_session(session_id)
         stored = s.get_messages(sid)
-        msgs = [to_langchain(m) for m in stored]
+        summary = s.get_summary(sid)
+        recent = [to_langchain(m) for m in stored]
+
+        msgs: List[BaseMessage] = []
+        if summary:
+            msgs.append(SystemMessage(content=f"此前对话摘要：\n{summary}"))
+
+        retrieved_n = 0
+        if question is not None and self.rag_index is not None:
+            hits = self.rag_index.search(question, sid, top_k=self.rag_top_k)
+            recent_texts = {str(m.content) for m in recent}
+            for turn_idx, role, text, _score in hits:
+                if text in recent_texts:
+                    continue
+                msgs.append(AIMessage(content=text) if role ==
+                            "assistant" else HumanMessage(content=text))
+                retrieved_n += 1
+
+        msgs += recent
         budget = self.cache.max_context_messages
+        before = len(msgs)
         if budget > 0 and len(msgs) > budget:
             msgs = trim_messages(
                 msgs,
@@ -138,13 +200,24 @@ class ContextManager:
                 strategy="last",
                 include_system=True,             # 系统提示始终保留
             )
+        if question is not None:
+            msgs = msgs + [HumanMessage(content=question)]
+
+        _log.info(
+            "get_context session=%s stored=%d summary=%s retrieved=%d sent=%d budget=%d",
+            sid, len(stored), "yes" if summary else "no", retrieved_n, len(
+                msgs), budget,
+        )
         return msgs
 
     def add_user(self, text: str, session_id: Optional[str] = None) -> None:
         s = self._ensure_store()
         sid = self._resolve_session(session_id)
         s.append(sid, StoredMessage(role="user", content=text))
+        _log.info("add_user session=%s len=%d", sid, len(text))
         self._maybe_enforce()
+        self._maybe_summarize(sid)
+        self._index_turn(sid, "user", text)
 
     def add_assistant(
         self,
@@ -166,7 +239,10 @@ class ContextManager:
                 args=args,
             ),
         )
+        _log.info("add_assistant session=%s len=%d", sid, len(content))
         self._maybe_enforce()
+        self._maybe_summarize(sid)
+        self._index_turn(sid, "assistant", content)
 
     # ---------- 清理与上限 ----------
 

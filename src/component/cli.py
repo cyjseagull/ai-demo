@@ -7,7 +7,10 @@ from langgraph.graph.state import CompiledStateGraph
 from rich import print
 
 # 修正函数签名：回调(agent,配置,用户字符串[,会话id]) → 返回回答字符串
-ChatHandler = Callable[[CompiledStateGraph, AgentConfig, str, Optional[str]], str]
+ChatHandler = Callable[[CompiledStateGraph,
+                        AgentConfig, str, Optional[str]], str]
+
+
 def cli_chat(agent: CompiledStateGraph,
              agent_config: AgentConfig,
              chat_handler: ChatHandler,

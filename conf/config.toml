@@ -22,3 +22,10 @@ path = "data/context_cache.db"
 max_sessions = 50
 max_messages_per_session = 200
 max_context_messages = 30
+
+[context.rag]
+enable = false
+backend = "sqlite_vec"
+embed_model = "local:bge-small-zh"
+top_k = 4
+recent_boost = 0.3

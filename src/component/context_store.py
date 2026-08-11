@@ -3,8 +3,8 @@
 
 - ContextStore: 存储抽象基类
 - StoredMessage: 可移植 JSON 载荷的消息模型
-- InMemoryContextStore: 进程内存后端，见 common/memory_store.py
-- SqliteContextStore: SQLite 后端（默认），见 common/sqlite_store.py
+- InMemoryContextStore: 进程内存后端，见 component/memory_store.py
+- SqliteContextStore: SQLite 后端（默认），见 component/sqlite_store.py
 - create_store: 按 backend 配置创建后端实例
 
 设计要点：
@@ -89,6 +89,21 @@ class ContextStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_summary(self, session_id: str) -> Optional[str]:
+        """返回会话的运行摘要；无摘要返回 None。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_summary(self, session_id: str, summary: Optional[str]) -> None:
+        """设置会话的运行摘要。"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def prune(self, session_id: str, keep: int) -> None:
+        """删除会话中最旧的消息，仅保留最近 keep 条。"""
+        raise NotImplementedError
+
+    @abstractmethod
     def enforce_caps(self, max_sessions: int, max_messages_per_session: int) -> None:
         """数量上限保留：超 max_sessions 按 updated_at 最旧淘汰；单会话超上限删最旧消息。"""
         raise NotImplementedError
@@ -115,7 +130,7 @@ def create_store(backend: str = "sqlite", path: str = "data/context_cache.db") -
     后端实现使用延迟导入，避免模块加载时与具体后端产生循环依赖。
     """
     if backend == "memory":
-        from common.memory_store import InMemoryContextStore
+        from component.memory_store import InMemoryContextStore
         return InMemoryContextStore()
-    from common.sqlite_store import SqliteContextStore
+    from component.sqlite_store import SqliteContextStore
     return SqliteContextStore(path)

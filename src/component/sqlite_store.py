@@ -9,9 +9,12 @@ import sqlite3
 import uuid
 from typing import Dict, List, Optional
 
-from common.context_store import ContextStore, StoredMessage, _now
+from component.context_store import ContextStore, StoredMessage, _now
+from component.logger import get_logger
 
-# 项目根目录（src/common/sqlite_store.py -> 上溯三级）
+_log = get_logger("sqlite_store")
+
+# 项目根目录（src/component/sqlite_store.py -> 上溯三级）
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -62,7 +65,8 @@ class SqliteContextStore(ContextStore):
             )
             # updated_at 仅写入时更新
             self._conn.execute(
-                "UPDATE sessions SET updated_at=? WHERE id=?", (now, session_id)
+                "UPDATE sessions SET updated_at=? WHERE id=?", (
+                    now, session_id)
             )
 
     def get_messages(self, session_id: str) -> List[StoredMessage]:
@@ -75,12 +79,45 @@ class SqliteContextStore(ContextStore):
 
     def delete_session(self, session_id: str) -> None:
         with self._conn:
-            self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            self._conn.execute(
+                "DELETE FROM sessions WHERE id=?", (session_id,))
+
+    def get_summary(self, session_id: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT summary FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        return row["summary"] if row else None
+
+    def set_summary(self, session_id: str, summary: Optional[str]) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE sessions SET summary=? WHERE id=?", (
+                    summary, session_id)
+            )
+        _log.info("set_summary session=%s summary_len=%d",
+                  session_id, len(summary) if summary else 0)
+
+    def prune(self, session_id: str, keep: int) -> None:
+        cnt = self._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)
+        ).fetchone()[0]
+        excess = cnt - keep
+        if excess > 0:
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM messages WHERE session_id=? AND id IN ("
+                    " SELECT id FROM messages WHERE session_id=? "
+                    " ORDER BY created_at ASC, id ASC LIMIT ?)",
+                    (session_id, session_id, excess),
+                )
+        _log.info("prune session=%s before=%d keep=%d removed=%d",
+                  session_id, cnt, keep, max(excess, 0))
 
     def enforce_caps(self, max_sessions: int, max_messages_per_session: int) -> None:
         with self._conn:
             # 会话数上限：按 updated_at 最旧 LRU 淘汰（外键级联删除消息）
-            n = self._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions").fetchone()[0]
             excess_sessions = n - max_sessions
             if excess_sessions > 0:
                 self._conn.execute(
@@ -108,7 +145,8 @@ class SqliteContextStore(ContextStore):
             self._conn.execute("DELETE FROM sessions")
 
     def list_sessions(self) -> Dict[str, float]:
-        rows = self._conn.execute("SELECT id, updated_at FROM sessions").fetchall()
+        rows = self._conn.execute(
+            "SELECT id, updated_at FROM sessions").fetchall()
         return {r["id"]: r["updated_at"] for r in rows}
 
     def close(self) -> None:
