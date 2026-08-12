@@ -48,11 +48,19 @@ class RagConfig:
 
 
 @dataclass
+class LogConfig:
+    """日志配置（[log] 段）。"""
+    level: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
+    path: str = ""               # 日志文件路径；为空则仅输出到控制台
+
+
+@dataclass
 class AppConfig:
     llm: LLMConfig
     agent: AgentConfig
     cache: CacheConfig = field(default_factory=CacheConfig)
     rag: RagConfig = field(default_factory=RagConfig)
+    log: LogConfig = field(default_factory=LogConfig)
 
 
 def load_config(config_path: str = "config.toml"):
@@ -90,9 +98,15 @@ def load_config(config_path: str = "config.toml"):
     rag_sec = d.get("context", {}).get("rag", {})
     rag_cfg = RagConfig(**{**rag_defaults, **rag_sec})
 
+    # [log]：可选段，缺失或部分字段缺失时回退默认值
+    log_defaults = dict(level="INFO", path="")
+    log_sec = d.get("log", {})
+    log_cfg = LogConfig(**{**log_defaults, **log_sec})
+
     return AppConfig(
         llm=LLMConfig(**d["llm"]),
         agent=agent_cfg,
         cache=cache_cfg,
         rag=rag_cfg,
+        log=log_cfg,
     )

@@ -1,5 +1,6 @@
 from component.agent_service import AgentService
 from component.cli import cli_chat
+from component.logger import setup_logging
 from config.config import load_config
 import os
 import sys
@@ -17,6 +18,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = load_config(args.config)
+
+    # 按配置初始化日志（级别 + 可选文件路径）
+    setup_logging(config.log.level, config.log.path)
 
     # 构造 Agent 服务：装配 LLM + Agent + 上下文缓存（含 RAG/摘要），并恢复会话
     service = AgentService(config, clear_cache=args.clear_cache)

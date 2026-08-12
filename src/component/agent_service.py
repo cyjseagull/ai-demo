@@ -17,6 +17,7 @@ from component.context_manager import ContextManager
 from component.embeddings import make_embed_fn
 from component.rag_index import create_rag_index
 from component.summarizer import make_summarizer
+from component.token_usage import TokenUsageCallback
 from config.config import AppConfig
 
 
@@ -83,16 +84,22 @@ class AgentService:
             messages = [HumanMessage(content=user_query)]
 
         agent_cfg = self.config.agent
+        # 模型用量监控：回调采集每次 LLM 调用 usage（覆盖 Agent 内部多次调用）
+        usage_cb = TokenUsageCallback(
+            session_id=sid, model=self.config.llm.model)
         # 输入与 config 为 langgraph 动态状态类型，cast 到 Any 以适配 invoke 签名
         res = self.agent.invoke(
             cast(Any, {"messages": messages}),
             config=cast(Any, {
+                "callbacks": [usage_cb],
                 "max_iterations": agent_cfg.max_iterations,
                 "handle_parsing_errors": agent_cfg.handle_parsing_errors,
                 "return_intermediate_steps": agent_cfg.return_intermediate_steps,
                 "max_execution_time": agent_cfg.max_execution_time,
             }),
         )
+        # 会话级汇总：总 token / 缓存命中率 / 成本估算（日志输出，不落库）
+        usage_cb.log_round_summary()
         reply = res["messages"][-1].text
 
         if self.context_manager is not None:

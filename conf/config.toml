@@ -29,3 +29,7 @@ backend = "sqlite_vec"
 embed_model = "local:bge-small-zh"
 top_k = 4
 recent_boost = 0.3
+
+[log]
+level = "INFO"
+path = "logs/app.log"
