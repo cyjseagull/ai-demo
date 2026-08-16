@@ -18,16 +18,21 @@ _log = get_logger("sqlite_store")
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-_DDL_PATH = os.path.join(_PROJECT_ROOT, "sql", "create_table.sql")
+# 兼容源码运行与已安装包运行（安装到 site-packages 时 __file__ 无 sql/ 目录）
+_DDL_CANDIDATES = [
+    os.path.join(_PROJECT_ROOT, "sql", "create_table.sql"),
+    os.path.join(os.getcwd(), "sql", "create_table.sql"),
+]
 
 
 def _load_ddl() -> str:
-    if not os.path.exists(_DDL_PATH):
-        raise FileNotFoundError(
-            f"建表 DDL 不存在: {_DDL_PATH}（应位于项目根目录 sql/create_table.sql）"
-        )
-    with open(_DDL_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+    for p in _DDL_CANDIDATES:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read()
+    raise FileNotFoundError(
+        f"建表 DDL 不存在，尝试路径: {_DDL_CANDIDATES}（应在项目根目录 sql/create_table.sql）"
+    )
 
 
 class SqliteContextStore(ContextStore):

@@ -1,15 +1,21 @@
-from component.agent_service import AgentService
-from component.cli import cli_chat
-from component.logger import setup_logging
-from config.config import load_config
 import os
 import sys
 import argparse
+
+# 在导入项目包之前，先把 src 加入 sys.path 最前，优先使用本地 src 副本，
+# 避免命中已安装的 site-packages 旧副本（旧副本缺新字段/无法定位 sql/ 目录）。
 root_path = os.path.abspath(os.path.dirname(__file__))
-sys.path.append(os.path.join(root_path, "../"))
+sys.path.insert(0, os.path.join(root_path, "../"))
 
 
-if __name__ == "__main__":
+def main():
+    # 项目包在函数内导入：autopep8 不会把函数内的 import 提到顶部，
+    # 从而保证上面的 sys.path 设置先执行、始终使用本地 src/ 副本。
+    from config.config import load_config
+    from component.cli import cli_chat
+    from component.logger import setup_logging
+    from component.agent_service import AgentService
+
     parser = argparse.ArgumentParser(description="AI chat demo")
     parser.add_argument("-c", "--config", default="config.toml",
                         help="Path to the config TOML file (default: config.toml)")
@@ -33,3 +39,7 @@ if __name__ == "__main__":
 
     # cleanup
     service.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -33,13 +33,20 @@ class AgentService:
     # ---------- 装配 ----------
 
     def init_agent(self) -> Tuple[Any, CompiledStateGraph]:
-        """创建 LLM 与 langgraph Agent。"""
+        """创建 LLM 与 langgraph Agent（按配置注入联网搜索工具）。"""
         llm = ChatOpenAI(model=self.config.llm.model,
                          temperature=self.config.llm.temperature,
                          base_url=self.config.llm.base_url,
-                         api_key=self.config.llm.api_key)
+                         api_key=self.config.llm.api_key,
+                         stream_usage=True)   # 流式时也返回 usage，供 token 用量监控
+        tools = []
+        search = getattr(self.config, "search", None)
+        if search is not None and search.enable:
+            from component.search_tool import make_search_tool
+            tools = [make_search_tool(search.provider, search.max_results)]
         agent: CompiledStateGraph = create_agent(
             model=llm,
+            tools=tools,
             system_prompt=self.config.agent.system_prompt,
             debug=self.config.agent.debug)
         return llm, agent
@@ -63,6 +70,8 @@ class AgentService:
         context_manager = ContextManager(
             self.config.cache, summarizer=summarizer, rag_index=rag_index)
         context_manager.rag_top_k = self.config.rag.top_k
+        context_manager.min_relevance = getattr(
+            self.config.rag, "min_relevance", 0.25)
         if clear_cache:
             context_manager.clear_all()
         session_id = context_manager.current_session()
@@ -70,10 +79,12 @@ class AgentService:
 
     # ---------- 对话 ----------
 
-    def handle(self, user_query: str, session_id: Optional[str] = None) -> str:
-        """处理一轮对话：三层组装上下文（摘要+检索+窗口+问题）→ invoke → 保存回复。
+    def handle(self, user_query: str, session_id: Optional[str] = None,
+               stream: bool = False, on_token=None) -> str:
+        """处理一轮对话：三层组装上下文 → invoke/流式 → 保存回复。
 
-        显式传入 session_id 可精确定位会话；未启用缓存时保持无上下文行为。
+        :param stream: 为 True 时用 agent.stream(stream_mode="messages") 逐 token 输出，避免停顿感
+        :param on_token: 流式回调 Callable[[str], None]；缺省直接 print 到 stdout
         """
         sid = self.session_id if session_id is None else session_id
         messages: List[BaseMessage]
@@ -87,29 +98,62 @@ class AgentService:
         # 模型用量监控：回调采集每次 LLM 调用 usage（覆盖 Agent 内部多次调用）
         usage_cb = TokenUsageCallback(
             session_id=sid, model=self.config.llm.model)
-        # 输入与 config 为 langgraph 动态状态类型，cast 到 Any 以适配 invoke 签名
-        res = self.agent.invoke(
-            cast(Any, {"messages": messages}),
-            config=cast(Any, {
-                "callbacks": [usage_cb],
-                "max_iterations": agent_cfg.max_iterations,
-                "handle_parsing_errors": agent_cfg.handle_parsing_errors,
-                "return_intermediate_steps": agent_cfg.return_intermediate_steps,
-                "max_execution_time": agent_cfg.max_execution_time,
-            }),
-        )
+        invoke_config = cast(Any, {
+            "callbacks": [usage_cb],
+            "max_iterations": agent_cfg.max_iterations,
+            "handle_parsing_errors": agent_cfg.handle_parsing_errors,
+            "return_intermediate_steps": agent_cfg.return_intermediate_steps,
+            "max_execution_time": agent_cfg.max_execution_time,
+        })
+
+        if stream:
+            reply = self._stream_invoke(
+                cast(Any, {"messages": messages}), invoke_config, on_token)
+        else:
+            res = self.agent.invoke(
+                cast(Any, {"messages": messages}), config=invoke_config)
+            reply = res["messages"][-1].text
+
         # 会话级汇总：总 token / 缓存命中率 / 成本估算（日志输出，不落库）
         usage_cb.log_round_summary()
-        reply = res["messages"][-1].text
 
         if self.context_manager is not None:
             self.context_manager.add_user(user_query, session_id=sid)
             self.context_manager.add_assistant(reply, session_id=sid)
         return reply
 
-    def chat_handler(self):
-        """返回兼容 cli.ChatHandler 的回调：入参(agent, config, text[, session_id])。"""
-        return lambda agent, agent_config, user_query, session_id=None: self.handle(user_query, session_id)
+    def _stream_invoke(self, agent_input, invoke_config, on_token=None) -> str:
+        """用 agent.stream(stream_mode="messages") 逐 token 输出并返回完整文本。"""
+        from langchain_core.messages import AIMessageChunk
+        parts: List[str] = []
+
+        def emit(text: str) -> None:
+            parts.append(text)
+            if on_token:
+                on_token(text)
+            else:
+                print(text, end="", flush=True)
+
+        for chunk, _meta in self.agent.stream(
+            agent_input, config=invoke_config, stream_mode="messages"
+        ):
+            if isinstance(chunk, AIMessageChunk) and chunk.content:
+                text = chunk.content if isinstance(
+                    chunk.content, str) else str(chunk.content)
+                if text:
+                    emit(text)
+        return "".join(parts)
+
+    def chat_handler(self, stream: bool = True):
+        """返回兼容 cli.ChatHandler 的回调：入参(agent, config, text[, session_id])。
+
+        stream=True 时流式输出（逐 token 打印）。
+        """
+        if stream:
+            return lambda agent, agent_config, user_query, session_id=None: self.handle(
+                user_query, session_id, stream=True)
+        return lambda agent, agent_config, user_query, session_id=None: self.handle(
+            user_query, session_id)
 
     # ---------- 资源 ----------
 

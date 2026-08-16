@@ -15,7 +15,8 @@ def cli_chat(agent: CompiledStateGraph,
              agent_config: AgentConfig,
              chat_handler: ChatHandler,
              context_manager=None,
-             session_id: Optional[str] = None):
+             session_id: Optional[str] = None,
+             stream: bool = True):
     """
     通用命令行交互终端
     :param agent: langgraph 编译后的Agent实例
@@ -23,6 +24,7 @@ def cli_chat(agent: CompiledStateGraph,
     :param chat_handler: 处理句柄，入参(agent,config,用户提问[,会话id])，返回回答文本
     :param context_manager: 可选上下文缓存门面；提供 /clear、/new 会话控制
     :param session_id: 当前会话 id；有值时会话相关命令会更新它，并透传给 chat_handler
+    :param stream: 为 True 时流式显示（先打印 🤖 前缀，handler 逐 token 输出，避免长时间停顿）
     """
     history = FileHistory(".chat_history")
     print("[green]AI命令行问答终端：输入 q 退出、clear 清空输入历史、/clear 清空当前会话、/new 开启新会话[/green]")
@@ -57,5 +59,11 @@ def cli_chat(agent: CompiledStateGraph,
                 print("[yellow]上下文缓存未启用，无需新建会话[/yellow]")
             continue
 
-        answer = chat_handler(agent, agent_config, user_text, session_id)
-        print(f"[blue]🤖 {answer}[/blue]\n")
+        if stream:
+            print("[blue]🤖 [/blue]", end="", flush=True)
+            chat_handler(agent, agent_config, user_text,
+                         session_id)   # 流式：handler 内部逐 token 输出
+            print("", flush=True)
+        else:
+            answer = chat_handler(agent, agent_config, user_text, session_id)
+            print(f"[blue]🤖 {answer}[/blue]\n")

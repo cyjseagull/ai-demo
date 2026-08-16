@@ -22,6 +22,9 @@ path = "data/context_cache.db"
 max_sessions = 50
 max_messages_per_session = 200
 max_context_messages = 30
+trim_strategy = "sliding_window"
+recent_window_size = 20
+summary_trigger_messages = 50
 
 [context.rag]
 enable = false
@@ -29,7 +32,13 @@ backend = "sqlite_vec"
 embed_model = "local:bge-small-zh"
 top_k = 4
 recent_boost = 0.3
+min_relevance = 0.25
 
 [log]
 level = "INFO"
 path = "logs/app.log"
+
+[search]
+enable = false
+provider = "duckduckgo"
+max_results = 3

@@ -64,6 +64,7 @@ class ContextManager:
         self.summarizer = summarizer   # 可选：Callable[[list[BaseMessage]], str]
         self.rag_index = rag_index     # 可选：component.rag_index.RagIndex
         self.rag_top_k = 4             # 检索命中条数，可由调用方按 RagConfig.top_k 覆盖
+        self.min_relevance = 0.25      # 相关性门控阈值：低于则丢弃历史窗口
         self._store: Optional[ContextStore] = None
         self._current_session: Optional[str] = None
         self._start_fresh = False   # 显式清理后下次创建新会话，而非恢复旧会话
@@ -163,16 +164,17 @@ class ContextManager:
     # ---------- 读写 ----------
 
     def get_context(self, session_id: Optional[str] = None, question: Optional[str] = None) -> List[BaseMessage]:
-        """组装三层记忆上下文：系统提示 + 运行摘要 + 检索命中轮次 + 最近窗口 + 当前问题。
+        """组装上下文：运行摘要 + topK 最相关的历史轮次 + 当前问题。
 
-        显式传入 session_id 可精确定位会话；question 非空且启用 RAG 时先做向量检索；
-        发送前按预算 trim_messages 兜底（系统提示与当前问题保留）。
+        - question 非空且启用 RAG：检索 topK 最相关的历史轮次，**仅注入单条相似度 >= min_relevance**
+          的轮次（按时间序）。不再对"全部历史取最大相似度"做整体门控，也不常开工作记忆。
+        - 无相关命中时，上下文只含 摘要 + 问题（避免无关历史全量下发）。
+        - 发送前按预算 trim_messages 兜底（系统提示与当前问题保留）。
         """
         s = self._ensure_store()
         sid = self._resolve_session(session_id)
         stored = s.get_messages(sid)
         summary = s.get_summary(sid)
-        recent = [to_langchain(m) for m in stored]
 
         msgs: List[BaseMessage] = []
         if summary:
@@ -181,15 +183,17 @@ class ContextManager:
         retrieved_n = 0
         if question is not None and self.rag_index is not None:
             hits = self.rag_index.search(question, sid, top_k=self.rag_top_k)
-            recent_texts = {str(m.content) for m in recent}
-            for turn_idx, role, text, _score in hits:
-                if text in recent_texts:
-                    continue
+            # 仅注入"纯相似度"达标的轮次（不含近因加权，避免无关问题的最近轮次被注入）
+            hits = [h for h in hits if h[4] >= self.min_relevance]
+            hits.sort(key=lambda h: h[0])   # 按时间序注入
+            for turn_idx, role, text, _score, _sim in hits:
                 msgs.append(AIMessage(content=text) if role ==
                             "assistant" else HumanMessage(content=text))
                 retrieved_n += 1
+            if retrieved_n == 0:
+                _log.info(
+                    "get_context session=%s no relevant history injected", sid)
 
-        msgs += recent
         budget = self.cache.max_context_messages
         before = len(msgs)
         if budget > 0 and len(msgs) > budget:

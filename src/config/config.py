@@ -45,6 +45,7 @@ class RagConfig:
     embed_model: str = "local:bge-small-zh"  # embedding 模型
     top_k: int = 4                           # 检索命中条数
     recent_boost: float = 0.3                # 近因加权系数
+    min_relevance: float = 0.25              # 相关性门控阈值：低于则丢弃历史窗口
 
 
 @dataclass
@@ -55,12 +56,21 @@ class LogConfig:
 
 
 @dataclass
+class SearchConfig:
+    """联网搜索配置（[search] 段）。"""
+    enable: bool = False
+    provider: str = "duckduckgo"     # 当前有限支持 duckduckgo
+    max_results: int = 3
+
+
+@dataclass
 class AppConfig:
     llm: LLMConfig
     agent: AgentConfig
     cache: CacheConfig = field(default_factory=CacheConfig)
     rag: RagConfig = field(default_factory=RagConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
 
 
 def load_config(config_path: str = "config.toml"):
@@ -94,6 +104,7 @@ def load_config(config_path: str = "config.toml"):
         embed_model="local:bge-small-zh",
         top_k=4,
         recent_boost=0.3,
+        min_relevance=0.25,
     )
     rag_sec = d.get("context", {}).get("rag", {})
     rag_cfg = RagConfig(**{**rag_defaults, **rag_sec})
@@ -103,10 +114,16 @@ def load_config(config_path: str = "config.toml"):
     log_sec = d.get("log", {})
     log_cfg = LogConfig(**{**log_defaults, **log_sec})
 
+    # [search]：可选段，缺失或部分字段缺失时回退默认值（默认关闭）
+    search_defaults = dict(enable=False, provider="duckduckgo", max_results=3)
+    search_sec = d.get("search", {})
+    search_cfg = SearchConfig(**{**search_defaults, **search_sec})
+
     return AppConfig(
         llm=LLMConfig(**d["llm"]),
         agent=agent_cfg,
         cache=cache_cfg,
         rag=rag_cfg,
         log=log_cfg,
+        search=search_cfg,
     )

@@ -24,11 +24,17 @@ class RagIndex(ABC):
     @abstractmethod
     def search(
         self, query: str, session_id: str, top_k: int = 4
-    ) -> List[Tuple[int, str, str, float]]:
+    ) -> List[Tuple[int, str, str, float, float]]:
         """按语义相似度检索同会话相关轮次。
 
-        返回 [(turn_idx, role, text, score)]，按 score 降序；turn_idx 供上层与最近窗口去重。
+        返回 [(turn_idx, role, text, score, sim)]，按 score 降序；
+        score 含近因加权，sim 为纯余弦相似度（用于相关性过滤）。
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def max_similarity(self, query: str, session_id: str) -> float:
+        """返回查询与该会话历史轮次的最大余弦相似度（用于相关性门控，不含近因加权）。"""
         raise NotImplementedError
 
     @abstractmethod

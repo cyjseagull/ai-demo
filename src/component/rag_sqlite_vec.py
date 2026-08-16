@@ -21,16 +21,21 @@ _log = get_logger("rag_sqlite_vec")
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-_DDL_PATH = os.path.join(_PROJECT_ROOT, "sql", "create_table.sql")
+# 兼容源码运行与已安装包运行（安装到 site-packages 时 __file__ 无 sql/ 目录）
+_DDL_CANDIDATES = [
+    os.path.join(_PROJECT_ROOT, "sql", "create_table.sql"),
+    os.path.join(os.getcwd(), "sql", "create_table.sql"),
+]
 
 
 def _load_ddl() -> str:
-    if not os.path.exists(_DDL_PATH):
-        raise FileNotFoundError(
-            f"建表 DDL 不存在: {_DDL_PATH}（应位于项目根目录 sql/create_table.sql）"
-        )
-    with open(_DDL_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+    for p in _DDL_CANDIDATES:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return f.read()
+    raise FileNotFoundError(
+        f"建表 DDL 不存在，尝试路径: {_DDL_CANDIDATES}（应在项目根目录 sql/create_table.sql）"
+    )
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -76,7 +81,7 @@ class SqliteVecRagIndex(RagIndex):
 
     def search(
         self, query: str, session_id: str, top_k: int = 4
-    ) -> List[Tuple[int, str, str, float]]:
+    ) -> List[Tuple[int, str, str, float, float]]:
         qv = self.embed_fn(query)
         rows = self._conn.execute(
             "SELECT turn_idx, role, text, embedding, created_at FROM rag_turns WHERE session_id=?",
@@ -94,7 +99,7 @@ class SqliteVecRagIndex(RagIndex):
             sim = _cosine(qv, json.loads(r["embedding"]))
             recency = (r["created_at"] - tmin) / span      # 0..1，越大越新
             score = sim + self.recent_boost * recency
-            scored.append((r["turn_idx"], r["role"], r["text"], score))
+            scored.append((r["turn_idx"], r["role"], r["text"], score, sim))
         scored.sort(key=lambda x: x[3], reverse=True)
         top = scored[:top_k]
         _log.info(
@@ -102,6 +107,19 @@ class SqliteVecRagIndex(RagIndex):
             session_id, top_k, len(top),
         )
         return top
+
+    def max_similarity(self, query: str, session_id: str) -> float:
+        """返回查询与该会话历史轮次的最大余弦相似度（纯相似度，不含近因加权）。"""
+        qv = self.embed_fn(query)
+        rows = self._conn.execute(
+            "SELECT embedding FROM rag_turns WHERE session_id=?", (session_id,)
+        ).fetchall()
+        best = 0.0
+        for r in rows:
+            sim = _cosine(qv, json.loads(r["embedding"]))
+            if sim > best:
+                best = sim
+        return best
 
     def close(self) -> None:
         self._conn.close()
