@@ -1,3 +1,5 @@
+import time
+
 from prompt_toolkit import prompt
 from prompt_toolkit.history import FileHistory
 from config.config import AgentConfig
@@ -29,7 +31,9 @@ def cli_chat(agent: CompiledStateGraph,
     :param agent_service: 可选 AgentService；提供写文件待写项的展示与人工审核（y/e/d）
     """
     history = FileHistory(".chat_history")
-    print("[green]AI命令行问答终端：输入 q 退出、clear 清空输入历史、/clear 清空当前会话、/new 开启新会话[/green]")
+    print("[green]AI命令行问答终端：q 退出 | clear 清空输入历史 | /session 当前会话 | "
+          "/sessions 列出会话 | /new 新会话 | /use <id> 切换 | /delete <id> 删除 | "
+          "/clear 清空当前会话[/green]")
 
     while True:
         user_text = prompt(
@@ -59,6 +63,56 @@ def cli_chat(agent: CompiledStateGraph,
                 print(f"[yellow]已开启新会话：{session_id}[/yellow]")
             else:
                 print("[yellow]上下文缓存未启用，无需新建会话[/yellow]")
+            continue
+        if cmd == "/session":
+            print(f"[green]当前会话：{session_id}[/green]" if session_id
+                  else "[yellow]无当前会话[/yellow]")
+            continue
+        if cmd == "/sessions":
+            if context_manager is None:
+                print("[yellow]上下文缓存未启用[/yellow]")
+            else:
+                rows = context_manager.list_sessions()
+                if not rows:
+                    print("[yellow]暂无会话[/yellow]")
+                else:
+                    print(
+                        f"[green]会话列表（共 {len(rows)} 个，* 为当前，按最近更新倒序）:[/green]")
+                    for i, it in enumerate(rows, 1):
+                        mark = "*" if it["id"] == session_id else " "
+                        when = time.strftime(
+                            "%m-%d %H:%M", time.localtime(it["updated_at"]))
+                        print(f"  {mark} [{i}] {it['id'][:8]} msgs={it['messages']} "
+                              f"{when} {it['preview']}")
+            continue
+        if cmd.startswith("/use ") or cmd.startswith("/switch "):
+            if context_manager is None:
+                print("[yellow]上下文缓存未启用[/yellow]")
+                continue
+            target = user_text.split(" ", 1)[1].strip()
+            sid = _resolve_session_target(context_manager, target, session_id)
+            if sid is None:
+                print(f"[red]未找到会话：{target}[/red]（可用 /sessions 查看）")
+            else:
+                session_id = sid
+                print(f"[yellow]已切换到会话：{session_id}[/yellow]")
+            continue
+        if cmd.startswith("/delete "):
+            if context_manager is None:
+                print("[yellow]上下文缓存未启用[/yellow]")
+                continue
+            target = user_text.split(" ", 1)[1].strip()
+            sid = _resolve_session_target(context_manager, target, session_id)
+            if sid is None:
+                print(f"[red]未找到会话：{target}[/red]（可用 /sessions 查看）")
+            else:
+                was_current = (sid == session_id)
+                context_manager.delete_session(sid)
+                if was_current:
+                    session_id = context_manager.start_new_session()
+                    print(f"[yellow]已删除会话 {sid}，已开启新会话：{session_id}[/yellow]")
+                else:
+                    print(f"[yellow]已删除会话：{sid}[/yellow]")
             continue
 
         if stream:
@@ -103,3 +157,22 @@ def _review_pending(agent_service) -> None:
             break
         else:
             print("[red]  无效输入，请输入 y / e / d（回车跳过剩余）[/red]")
+
+
+def _resolve_session_target(context_manager, target: str,
+                            current: Optional[str]) -> Optional[str]:
+    """把 /use、/delete 的目标解析为会话 id：支持序号（1-based）或 id 前缀。
+
+    序号基于 /sessions 的倒序列表（1 为最近）；id 前缀需唯一匹配。
+    """
+    rows = context_manager.list_sessions()
+    if target.isdigit():
+        i = int(target)
+        if 1 <= i <= len(rows):
+            return rows[i - 1]["id"]
+        return None
+    for r in rows:
+        if r["id"] == target:
+            return r["id"]
+    matched = [r["id"] for r in rows if r["id"].startswith(target)]
+    return matched[0] if len(matched) == 1 else None

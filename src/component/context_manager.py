@@ -142,6 +142,54 @@ class ContextManager:
         self._start_fresh = True
         return self._current_session
 
+    def list_sessions(self, max_items: int = 50) -> List[dict]:
+        """列出全部会话（按最近更新倒序）：id / 消息数 / 更新时间 / 首条用户消息预览。
+
+        供 CLI 的 /sessions 展示与 /use、/delete 的目标解析。
+        """
+        s = self._ensure_store()
+        items = []
+        for sid, updated_at in s.list_sessions().items():
+            msgs = s.get_messages(sid)
+            preview = ""
+            for m in msgs:
+                if m.role == "user" and m.content.strip():
+                    preview = m.content.strip().replace("\n", " ")[:40]
+                    break
+            items.append({
+                "id": sid,
+                "messages": len(msgs),
+                "updated_at": updated_at,
+                "preview": preview,
+            })
+        items.sort(key=lambda it: it["updated_at"], reverse=True)
+        return items[:max_items]
+
+    def switch_session(self, session_id: str) -> Optional[str]:
+        """切换到已存在的会话（/use）；不存在返回 None。"""
+        s = self._ensure_store()
+        if session_id not in s.list_sessions():
+            return None
+        self._current_session = session_id
+        self._start_fresh = False
+        return session_id
+
+    def delete_session(self, session_id: str) -> bool:
+        """删除指定会话（消息 + 运行摘要 + RAG 索引条目）；返回是否存在。
+
+        删除的是当前会话时，置为待新建（下次访问创建全新会话）。
+        """
+        s = self._ensure_store()
+        if session_id not in s.list_sessions():
+            return False
+        s.delete_session(session_id)
+        if self.rag_index is not None:
+            self.rag_index.delete_session(session_id)
+        if self._current_session == session_id:
+            self._current_session = None
+            self._start_fresh = True
+        return True
+
     def _resolve_session(self, session_id: Optional[str] = None) -> str:
         """解析目标会话：显式 session_id 优先（须已存在）；缺省走当前会话。"""
         if session_id is not None:

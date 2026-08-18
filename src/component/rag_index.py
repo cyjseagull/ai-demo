@@ -37,6 +37,10 @@ class RagIndex(ABC):
         """返回查询与该会话历史轮次的最大余弦相似度（用于相关性门控，不含近因加权）。"""
         raise NotImplementedError
 
+    def delete_session(self, session_id: str) -> None:
+        """删除该会话的全部索引条目；默认空实现，无索引/无需清理的后端可忽略。"""
+        return None
+
     @abstractmethod
     def close(self) -> None:
         """释放资源。"""

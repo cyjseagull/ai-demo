@@ -121,5 +121,11 @@ class SqliteVecRagIndex(RagIndex):
                 best = sim
         return best
 
+    def delete_session(self, session_id: str) -> None:
+        """删除该会话的全部向量索引条目（删除会话后清理 rag_turns，避免孤儿行残留）。"""
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM rag_turns WHERE session_id=?", (session_id,))
+
     def close(self) -> None:
         self._conn.close()
