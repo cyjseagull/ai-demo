@@ -32,7 +32,7 @@ backend = "sqlite_vec"
 embed_model = "local:bge-small-zh"
 top_k = 4
 recent_boost = 0.3
-min_relevance = 0.25
+min_relevance = 0.5
 
 [log]
 level = "INFO"

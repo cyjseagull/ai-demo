@@ -86,7 +86,7 @@ class AgentService:
             self.config.cache, summarizer=summarizer, rag_index=rag_index)
         context_manager.rag_top_k = self.config.rag.top_k
         context_manager.min_relevance = getattr(
-            self.config.rag, "min_relevance", 0.25)
+            self.config.rag, "min_relevance", 0.5)
         if clear_cache:
             context_manager.clear_all()
         session_id = context_manager.current_session()

@@ -45,7 +45,7 @@ class RagConfig:
     embed_model: str = "local:bge-small-zh"  # embedding 模型
     top_k: int = 4                           # 检索命中条数
     recent_boost: float = 0.3                # 近因加权系数
-    min_relevance: float = 0.25              # 相关性门控阈值：低于则丢弃历史窗口
+    min_relevance: float = 0.5               # 相关性门控阈值：低于则丢弃历史窗口
 
 
 @dataclass
@@ -121,7 +121,7 @@ def load_config(config_path: str = "config.toml"):
         embed_model="local:bge-small-zh",
         top_k=4,
         recent_boost=0.3,
-        min_relevance=0.25,
+        min_relevance=0.5,
     )
     rag_sec = d.get("context", {}).get("rag", {})
     rag_cfg = RagConfig(**{**rag_defaults, **rag_sec})
