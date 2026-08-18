@@ -1,4 +1,6 @@
-# AI 对话助手 Demo
+# ai-toolkit
+
+> **ai-toolkit** is a complete, production-ready suite of AI-agent components for building conversational applications.
 
 一个在命令行里陪你聊天的 AI 助手 Demo。它不只"有问必答"，还做了很多让你聊得更省心、更省钱的努力：
 
