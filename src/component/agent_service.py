@@ -6,6 +6,7 @@
     reply = service.handle("你好", session_id=service.session_id)
     service.close()
 """
+import os
 from typing import Any, List, Optional, Tuple, cast
 
 from langchain.agents import create_agent
@@ -15,10 +16,14 @@ from langgraph.graph.state import CompiledStateGraph
 
 from component.context_manager import ContextManager
 from component.embeddings import make_embed_fn
+from component.file_tool import PendingWrite
+from component.logger import get_logger
 from component.rag_index import create_rag_index
 from component.summarizer import make_summarizer
 from component.token_usage import TokenUsageCallback
 from config.config import AppConfig
+
+_log = get_logger("agent_service")
 
 
 class AgentService:
@@ -26,6 +31,11 @@ class AgentService:
 
     def __init__(self, config: AppConfig, clear_cache: bool = False):
         self.config = config
+        tools_cfg = getattr(config, "tools", None)
+        self._base_dir = os.path.abspath(getattr(
+            getattr(tools_cfg, "save_file", None), "base_dir", "outputs"))
+        # 待写暂存队列：save_research 只入队，人工审核确认后才落盘
+        self._pending_writes: List[PendingWrite] = []
         self.llm, self.agent = self.init_agent()
         self.context_manager, self.session_id = self.recover_context(
             clear_cache=clear_cache)
@@ -44,10 +54,15 @@ class AgentService:
         if search is not None and search.enable:
             from component.search_tool import make_search_tool
             tools = [make_search_tool(search.provider, search.max_results)]
+        # 写文件工具：功能默认开启（无 enable 开关），始终注入；入队不写盘
+        from component.file_tool import SAVE_IDENTIFY_RULE, make_file_tool
+        tools = tools + \
+            [make_file_tool(self._base_dir, enqueue=self._enqueue_write)]
+        system_prompt = self.config.agent.system_prompt + SAVE_IDENTIFY_RULE
         agent: CompiledStateGraph = create_agent(
             model=llm,
             tools=tools,
-            system_prompt=self.config.agent.system_prompt,
+            system_prompt=system_prompt,
             debug=self.config.agent.debug)
         return llm, agent
 
@@ -154,6 +169,52 @@ class AgentService:
                 user_query, session_id, stream=True)
         return lambda agent, agent_config, user_query, session_id=None: self.handle(
             user_query, session_id)
+
+    # ---------- 写文件：暂存 + 人工审核 ----------
+
+    def _enqueue_write(self, file_path: str, content: str) -> None:
+        """save_research 工具入暂存回调：仅入队，不写盘。"""
+        self._pending_writes.append(
+            PendingWrite(path=file_path, content=content))
+
+    def pending_writes(self) -> List[dict]:
+        """返回待写项快照（供 CLI 展示与审核）。"""
+        return [{"path": w.path, "content": w.content} for w in self._pending_writes]
+
+    def confirm_write(self, index: int, mode: str) -> str:
+        """执行人工审核结果；这是唯一写盘入口（人工审核强制，无自动写入分支）。
+
+        :param mode: overwrite 覆盖 / append 追加 / discard 丢弃
+        """
+        if index < 0 or index >= len(self._pending_writes):
+            return f"待写项索引无效：{index}"
+        item = self._pending_writes[index]
+        if mode == "discard":
+            self._pending_writes.pop(index)
+            _log.info("丢弃待写项: %s", item.path)
+            return f"已丢弃待写项：{item.path}"
+        if mode not in ("overwrite", "append"):
+            return f"未知模式：{mode}（overwrite / append / discard）"
+        # 落盘前再次安全校验（防御纵深：工具内已校验，这里再兜底一次）
+        from component.file_tool import validate_path
+        norm = validate_path(item.path, self._base_dir)
+        if norm is None:
+            self._pending_writes.pop(index)
+            return f"路径校验失败，已丢弃：{item.path}"
+        full = os.path.join(self._base_dir, norm)
+        parent = os.path.dirname(full)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(full, "w" if mode == "overwrite" else "a",
+                  encoding="utf-8") as f:
+            f.write(item.content)
+        self._pending_writes.pop(index)
+        _log.info("已写入文件: %s（%s）", full, mode)
+        return f"已写入：{full}（{mode}）"
+
+    def clear_pending(self) -> None:
+        """清空全部待写项（例如退出时丢弃未确认内容）。"""
+        self._pending_writes.clear()
 
     # ---------- 资源 ----------
 

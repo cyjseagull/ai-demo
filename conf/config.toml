@@ -42,3 +42,6 @@ path = "logs/app.log"
 enable = false
 provider = "duckduckgo"
 max_results = 3
+
+[tools.save_file]
+base_dir = "outputs"

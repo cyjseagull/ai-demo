@@ -64,6 +64,22 @@ class SearchConfig:
 
 
 @dataclass
+class SaveFileConfig:
+    """文件保存配置（[tools.save_file] 段）。
+
+    功能默认开启（Agent 始终加载保存工具），无启用/大小/审核开关，
+    仅 `base_dir` 可配置：只允许写入该目录内的相对路径。
+    """
+    base_dir: str = "outputs"        # 相对项目根
+
+
+@dataclass
+class ToolsConfig:
+    """工具配置（[tools] 段）。"""
+    save_file: SaveFileConfig = field(default_factory=SaveFileConfig)
+
+
+@dataclass
 class AppConfig:
     llm: LLMConfig
     agent: AgentConfig
@@ -71,6 +87,7 @@ class AppConfig:
     rag: RagConfig = field(default_factory=RagConfig)
     log: LogConfig = field(default_factory=LogConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
 
 def load_config(config_path: str = "config.toml"):
@@ -119,6 +136,12 @@ def load_config(config_path: str = "config.toml"):
     search_sec = d.get("search", {})
     search_cfg = SearchConfig(**{**search_defaults, **search_sec})
 
+    # [tools.save_file]：可选段，仅 base_dir 可配置，缺失回退默认（功能默认开启）
+    save_file_defaults = dict(base_dir="outputs")
+    save_file_sec = d.get("tools", {}).get("save_file", {})
+    tools_cfg = ToolsConfig(
+        save_file=SaveFileConfig(**{**save_file_defaults, **save_file_sec}))
+
     return AppConfig(
         llm=LLMConfig(**d["llm"]),
         agent=agent_cfg,
@@ -126,4 +149,5 @@ def load_config(config_path: str = "config.toml"):
         rag=rag_cfg,
         log=log_cfg,
         search=search_cfg,
+        tools=tools_cfg,
     )

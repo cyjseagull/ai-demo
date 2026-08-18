@@ -92,6 +92,12 @@ class TokenUsageCallback(BaseCallbackHandler):
             self.round_total[k] += usage.get(k, 0)
 
     def _extract_usage(self, response) -> Dict[str, int]:
+        """从 LLMResult 提取用量。
+
+        非流式：usage 在 llm_output["token_usage"]（含 prompt_cache_hit/miss_tokens）。
+        流式：llm_output 为 None，usage 在 generations[0][0].message.usage_metadata
+        （input/output/total_tokens + input_token_details.cache_read）。
+        """
         u: Dict[str, Any] = {}
         llm_output = getattr(response, "llm_output", None) or {}
         u = llm_output.get("token_usage") or llm_output.get("usage") or {}
@@ -100,13 +106,31 @@ class TokenUsageCallback(BaseCallbackHandler):
             if gens and gens[0]:
                 info = getattr(gens[0][0], "generation_info", None) or {}
                 u = info.get("token_usage") or info.get("usage") or {}
-        return {
-            "input": u.get("prompt_tokens", 0) if u else 0,
-            "output": u.get("completion_tokens", 0) if u else 0,
-            "total": u.get("total_tokens", 0) if u else 0,
-            "hit": u.get("prompt_cache_hit_tokens", 0) if u else 0,
-            "miss": u.get("prompt_cache_miss_tokens", 0) if u else 0,
-        }
+        if u:
+            return {
+                "input": u.get("prompt_tokens", 0) or 0,
+                "output": u.get("completion_tokens", 0) or 0,
+                "total": u.get("total_tokens", 0) or 0,
+                "hit": u.get("prompt_cache_hit_tokens", 0) or 0,
+                "miss": u.get("prompt_cache_miss_tokens", 0) or 0,
+            }
+        # 流式分支：usage 在 message.usage_metadata
+        gens = getattr(response, "generations", None) or []
+        if gens and gens[0]:
+            md = getattr(getattr(gens[0][0], "message", None),
+                         "usage_metadata", None) or {}
+            if md:
+                inp = md.get("input_tokens") or 0
+                details = md.get("input_token_details") or {}
+                cache_read = details.get("cache_read") or 0
+                return {
+                    "input": inp,
+                    "output": md.get("output_tokens") or 0,
+                    "total": md.get("total_tokens") or 0,
+                    "hit": cache_read,
+                    "miss": max(inp - cache_read, 0),
+                }
+        return {"input": 0, "output": 0, "total": 0, "hit": 0, "miss": 0}
 
     def _model_of(self, response) -> str:
         llm_output = getattr(response, "llm_output", None) or {}

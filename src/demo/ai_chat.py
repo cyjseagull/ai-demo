@@ -35,7 +35,8 @@ def main():
     cli_chat(agent=service.agent, agent_config=config.agent,
              chat_handler=service.chat_handler(),
              context_manager=service.context_manager,
-             session_id=service.session_id)
+             session_id=service.session_id,
+             agent_service=service)
 
     # cleanup
     service.close()
